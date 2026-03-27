@@ -48,3 +48,11 @@ class Transcript(TranscriptBase):
 
     class Config:
         from_attributes = True
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+    voice_id: str = "EXAVITQu4vr4xnSDxMaL" # Bella (ElevenLabs Default)

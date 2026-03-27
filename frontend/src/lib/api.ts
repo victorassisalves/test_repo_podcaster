@@ -28,3 +28,8 @@ export const assignAgentToPodcast = async (podcastId: number, agentId: number) =
   const response = await api.post(`/podcasts/${podcastId}/agents/${agentId}`);
   return response.data;
 };
+
+export const chatWithAI = async (messages: { role: string, content: string }[], voiceId: string = "EXAVITQu4vr4xnSDxMaL") => {
+  const response = await api.post('/api/chat', { messages, voice_id: voiceId });
+  return response.data;
+};

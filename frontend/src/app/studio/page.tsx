@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { getPodcasts } from '@/lib/api';
+import { getPodcasts, chatWithAI } from '@/lib/api';
 
 const useAudioRecorder = () => {
   const mediaRecorder = useRef<MediaRecorder | null>(null);
@@ -45,51 +45,126 @@ export default function Studio() {
   const [podcasts, setPodcasts] = useState([]);
   const [selectedPodcast, setSelectedPodcast] = useState('');
   const [isRecording, setIsRecording] = useState(false);
+  const [isAILoading, setIsAILoading] = useState(false);
+
+  // Entire conversation context (for LLM memory)
+  const [messages, setMessages] = useState<{ role: string, content: string }[]>([]);
+
+  // UI Transcript display
   const [transcript, setTranscript] = useState<{ speaker: string, text: string }[]>([]);
   const [teleprompterMessages, setTeleprompterMessages] = useState<{ agent: string, message: string }[]>([]);
 
-  // Simulation references
   const streamRef = useRef<MediaStream | null>(null);
   const { startRecording: startAudioRec, stopRecording: stopAudioRec } = useAudioRecorder();
 
-  // Function to speak text using the Web Speech API
-  const speakAI = useCallback((text: string, voiceNameKeyword: string = 'Google') => {
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
-
-      // Try to find a distinct voice based on keyword
-      const voices = window.speechSynthesis.getVoices();
-      const selectedVoice = voices.find(v => v.name.includes(voiceNameKeyword)) || voices[0];
-
-      if (selectedVoice) {
-         utterance.voice = selectedVoice;
-      }
-
-      // Slightly adjust pitch/rate to make it sound different from default if needed
-      utterance.pitch = 1.1;
-      utterance.rate = 1.0;
-
-      window.speechSynthesis.speak(utterance);
-    } else {
-      console.warn("Speech Synthesis is not supported in this browser.");
-    }
-  }, []);
+  // Web Speech Recognition for continuous listening
+  const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
     fetchPodcasts();
 
-    // Initialize voices
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.onvoiceschanged = () => {
-         // Load voices
-         window.speechSynthesis.getVoices();
+    // Initialize Web Speech API for recognizing human speech
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      recognitionRef.current = new SpeechRecognition();
+      recognitionRef.current.continuous = false; // Stop after a pause to let AI respond
+      recognitionRef.current.interimResults = false; // Only final sentences
+      recognitionRef.current.lang = 'en-US';
+
+      recognitionRef.current.onresult = async (event: any) => {
+        const transcriptText = event.results[event.results.length - 1][0].transcript;
+        console.log("Heard:", transcriptText);
+
+        // Append user text
+        setTranscript(prev => [...prev, { speaker: 'Host (You)', text: transcriptText }]);
+
+        const newMessages = [...messages, { role: 'user', content: transcriptText }];
+        setMessages(newMessages);
+
+        // Let the AI respond
+        await handleAIResponse(newMessages);
       };
+
+      recognitionRef.current.onerror = (event: any) => {
+        console.error("Speech recognition error", event.error);
+        if (isRecording && event.error !== 'aborted') {
+            // Try restarting if it randomly drops
+            setTimeout(() => {
+                if(isRecording && !isAILoading) {
+                   try { recognitionRef.current.start(); } catch(e){}
+                }
+            }, 1000);
+        }
+      };
+
+      recognitionRef.current.onend = () => {
+          // If we are recording and AI is not currently speaking/loading, restart listening
+          if (isRecording && !isAILoading) {
+               try { recognitionRef.current.start(); } catch(e){}
+          }
+      };
+
+    } else {
+      console.warn("Speech Recognition API not supported in this browser. Please use Chrome/Edge.");
     }
-  }, []);
+
+    // Cleanup
+    return () => {
+        if(recognitionRef.current) {
+           recognitionRef.current.stop();
+        }
+    };
+  }, [messages, isRecording, isAILoading]);
 
   const fetchPodcasts = async () => {
     const data = await getPodcasts();
     setPodcasts(data);
+  };
+
+  const playBase64Audio = (base64Audio: string) => {
+    return new Promise((resolve) => {
+        if (!base64Audio) {
+            resolve(true);
+            return;
+        }
+
+        const audioSrc = `data:audio/mp3;base64,${base64Audio}`;
+        const audio = new Audio(audioSrc);
+        audio.onended = () => resolve(true);
+        audio.play().catch(e => {
+            console.error("Audio play error:", e);
+            resolve(true); // Resolve anyway to not break loop
+        });
+    });
+  };
+
+  const handleAIResponse = async (contextMessages: { role: string, content: string }[]) => {
+      setIsAILoading(true);
+      // Stop listening while AI thinks/speaks
+      if(recognitionRef.current) {
+         try { recognitionRef.current.stop(); } catch(e) {}
+      }
+
+      try {
+          // Call Backend
+          const aiData = await chatWithAI(contextMessages, "EXAVITQu4vr4xnSDxMaL"); // Bella voice
+
+          setTranscript(prev => [...prev, { speaker: 'AI Co-Host', text: aiData.text }]);
+          setMessages([...contextMessages, { role: 'assistant', content: aiData.text }]);
+
+          // Play Audio (Blocks until finished)
+          await playBase64Audio(aiData.audio_base64);
+
+      } catch (err) {
+          console.error("AI Chat Error:", err);
+          setTranscript(prev => [...prev, { speaker: 'System Error', text: "Failed to reach AI. Ensure backend and API keys are running." }]);
+      } finally {
+          setIsAILoading(false);
+          // Resume listening after AI finishes talking
+          if (isRecording && recognitionRef.current) {
+               try { recognitionRef.current.start(); } catch(e) {}
+          }
+      }
   };
 
   const handleStartRecording = async () => {
@@ -99,30 +174,15 @@ export default function Studio() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       streamRef.current = stream;
       setIsRecording(true);
+      setMessages([]); // reset memory
+      setTranscript([{ speaker: 'System', text: 'Recording started... Start speaking into your mic!' }]);
+
       startAudioRec(stream);
 
-      // Simulate real-time data & AI interaction
-      setTranscript([{ speaker: 'System', text: 'Recording started...' }]);
-
-      setTimeout(() => {
-        setTranscript(prev => [...prev, { speaker: 'Host (You)', text: 'Welcome to the podcast! Today we are discussing AI agents.' }]);
-
-        // AI Co-host responds shortly after you speak
-        setTimeout(() => {
-           const aiResponse = "That's a great topic! AI agents are transforming how we interact with technology.";
-           setTranscript(prev => [...prev, { speaker: 'AI Co-Host', text: aiResponse }]);
-
-           // Physically read the response aloud
-           speakAI(aiResponse, 'Female'); // Try to use a female/distinct voice
-
-           // CrewAI Background Teleprompter insight
-           setTimeout(() => {
-              setTeleprompterMessages(prev => [...prev, { agent: 'Fact-checker', message: 'Remember to mention that MCP stands for Model Context Protocol.' }]);
-           }, 2000);
-
-        }, 3000);
-
-      }, 2000);
+      // Start listening to the mic
+      if(recognitionRef.current) {
+          try { recognitionRef.current.start(); } catch(e) {}
+      }
 
     } catch (err) {
       console.error("Error accessing microphone", err);
@@ -136,12 +196,12 @@ export default function Studio() {
     }
     setIsRecording(false);
     stopAudioRec();
-    setTranscript(prev => [...prev, { speaker: 'System', text: 'Recording stopped.' }]);
 
-    // Stop any ongoing AI speech
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
+    if(recognitionRef.current) {
+        recognitionRef.current.stop();
     }
+
+    setTranscript(prev => [...prev, { speaker: 'System', text: 'Recording stopped.' }]);
   };
 
   return (
@@ -179,7 +239,7 @@ export default function Studio() {
           <h2 className="text-xl font-semibold mb-4 text-purple-400">Teleprompter (Background Crew)</h2>
           <div className="space-y-4">
             {teleprompterMessages.length === 0 ? (
-              <p className="text-gray-500 italic">Waiting for crew insights...</p>
+              <p className="text-gray-500 italic">Background crew insights will appear here.</p>
             ) : (
               teleprompterMessages.map((msg, idx) => (
                 <div key={idx} className="bg-gray-700 p-3 rounded shadow-md border-l-4 border-purple-500">
@@ -199,13 +259,14 @@ export default function Studio() {
           </h2>
           <div className="flex-grow space-y-4 overflow-y-auto pb-4">
              {transcript.length === 0 ? (
-              <p className="text-gray-600 italic text-center mt-10">Start recording to see transcript and hear AI co-hosts.</p>
+              <p className="text-gray-600 italic text-center mt-10">Start recording and speak to begin the conversation.</p>
             ) : (
               transcript.map((line, idx) => (
-                <div key={idx} className={`flex flex-col ${line.speaker === 'System' ? 'items-center text-gray-500 text-sm' : line.speaker.includes('You') ? 'items-end' : 'items-start'}`}>
-                  {line.speaker !== 'System' && <span className="text-xs text-gray-400 mb-1">{line.speaker}</span>}
+                <div key={idx} className={`flex flex-col ${line.speaker === 'System' || line.speaker === 'System Error' ? 'items-center text-gray-500 text-sm' : line.speaker.includes('You') ? 'items-end' : 'items-start'}`}>
+                  {line.speaker !== 'System' && line.speaker !== 'System Error' && <span className="text-xs text-gray-400 mb-1">{line.speaker}</span>}
                   <div className={`px-4 py-2 rounded-lg max-w-[80%] ${
                     line.speaker === 'System' ? 'bg-transparent' :
+                    line.speaker === 'System Error' ? 'text-red-500 bg-red-900/20' :
                     line.speaker.includes('You') ? 'bg-blue-600 text-white' : 'bg-green-700 text-white'
                   }`}>
                     {line.text}
@@ -219,8 +280,10 @@ export default function Studio() {
           {isRecording && (
              <div className="mt-4 border-t border-gray-800 pt-4 flex gap-4">
                 <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                  <span className="text-sm text-gray-400">AI Audio Engine active</span>
+                  <div className={`w-2 h-2 rounded-full ${isAILoading ? 'bg-yellow-500 animate-pulse' : 'bg-blue-500'}`}></div>
+                  <span className="text-sm text-gray-400">
+                      {isAILoading ? "AI is thinking/speaking..." : "Listening to microphone..."}
+                  </span>
                 </div>
              </div>
           )}
