@@ -2,6 +2,30 @@
 
 This is a full-fledged podcast management and recording platform that allows you to record live audio podcasts with AI agents serving as co-hosts and a background crew running asynchronously.
 
+## Where to put your API Keys
+To power the AI brains and the high-quality voices (Google Gemini and ElevenLabs), you must provide your API keys.
+
+1. **Backend Keys**:
+   Navigate to the `backend` folder and copy the example file:
+   ```
+   cd backend
+   cp .env.example .env
+   ```
+   Open the newly created `.env` file and paste your keys:
+   ```
+   GOOGLE_API_KEY=your_actual_google_key_here
+   ELEVENLABS_API_KEY=your_actual_elevenlabs_key_here
+   OPENAI_API_KEY=your_openai_key_here
+   ```
+
+2. **Frontend Keys**:
+   Navigate to the `frontend` folder and copy the example file:
+   ```
+   cd frontend
+   cp .env.local.example .env.local
+   ```
+   This tells the Next.js frontend where your backend is running.
+
 ## Features
 - **Frontend**: Next.js (React) application built with Tailwind CSS. It connects to Google Gemini Live and ElevenLabs APIs via direct WebSockets for ultra-low latency conversational AI co-hosts.
 - **Backend**: FastAPI (Python) backend using CrewAI for background orchestration. Async tasks run a "Fact-Checker" and "Moderator" during the podcast, analyzing the transcript and pushing real-time insights to the frontend's Teleprompter.
